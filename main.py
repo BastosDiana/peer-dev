@@ -1,15 +1,17 @@
 import os
 from jira import JIRA
 from langchain_openai import OpenAI
-from langchain_community.utilities.jira import JiraAPIWrapper
-from sentence_transformers import SentenceTransformer
-import numpy as np
-import faiss
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import CharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.retrieval import FaissRetrieval
-from langchain.chains import create_history_aware_retriever, create_stuff_documents_chain, create_retrieval_chain
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
+import numpy as np
+import faiss
 
 # Environment variables
 os.environ["JIRA_API_TOKEN"] = ""
@@ -21,8 +23,7 @@ jira = JIRA(basic_auth=(os.environ["JIRA_USERNAME"], os.environ["JIRA_API_TOKEN"
             server=os.environ["JIRA_INSTANCE_URL"])
 
 # Initialize OpenAI for language processing
-llm = OpenAI(api_key="")
-model = SentenceTransformer('all-MiniLM-L6-v2')
+llm = OpenAI(api_key="", temperature=0, model="gpt-3.5-turbo-instruct")
 
 # Load data from JIRA and split the text data into chunks and then process them.
 # How to get the open issues?
@@ -42,12 +43,13 @@ for issue in issues:
 
 # Extract just the texts for embedding
 texts = [data[0] for data in issue_data]  # Get only the texts
-embeddings = model.encode(texts)
 
-# Populate the FAISS index - vector store
-d = embeddings.shape[1]
-index = faiss.IndexFlatL2(d)
-index.add(np.array(embeddings).astype('float32'))
+# Initialize Langchain OpenAI Embeddings:
+embeddings = OpenAIEmbeddings()
+
+# Initialize and populate the FAISS index
+db = FAISS.from_documents(texts, embeddings)
+
 
 # Define the prompt template
 prompt_template = ChatPromptTemplate.from_messages([
@@ -70,7 +72,14 @@ output_parser = StrOutputParser()
 chain = prompt_template | llm | output_parser
 
 # Retrieval chain using the FAISS vector store
-retrieval_chain = FaissRetrieval(index, issue_data)
+# retrieval_chain = FaissRetrieval(index, issue_data)
+
+# Querying the vector store
+query = "Find all tickets related to Contract"
+docs = db.similarity_search(query)
+
+# Converting the vector store into a retriever
+retriever = db.as_retriever()
 
 # Create a prompt for generating the search query
 prompt = ChatPromptTemplate.from_messages([
@@ -83,7 +92,7 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # Create the history-aware retrieval chain
-retriever_chain = create_history_aware_retriever(llm, retrieval_chain, prompt)
+retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
 
 # Define the prompt template for continuing conversation with retrieved documents
 document_prompt_template = ChatPromptTemplate.from_messages([
