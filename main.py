@@ -11,6 +11,8 @@ from langchain_chroma import Chroma
 import spacy
 
 # Modify the creation of Document instances to include page_content and metadata
+# pre-trained English language model from the spaCy library
+# nlp object becomes a language processing pipeline
 nlp = spacy.load("en_core_web_sm")
 class Document:
     def __init__(self, text, metadata=None, page_content=None):
@@ -32,8 +34,6 @@ jira = JIRA(basic_auth=(os.environ["JIRA_USERNAME"], os.environ["JIRA_API_TOKEN"
 llm = OpenAI(api_key=os.environ["OPENAI_API_KEY"], temperature=0, model="gpt-3.5-turbo")
 
 # Load data from JIRA and split the text data into chunks and then process them.
-# How to get the open issues?
-# Are this issues the open issues
 issues = jira.search_issues("project=MP")
 
 # Store issues along with their texts for reference later
@@ -88,15 +88,17 @@ prompt_template = ChatPromptTemplate.from_messages([
     ("user", "Okay, thank you for checking."),
     ("system", "You're welcome! If you have any more questions or need further assistance, feel free to ask."),
 ])
-# Define the LLM chain with prompt llm and output parser
-output_parser = StrOutputParser()
-chain = prompt_template | llm | output_parser
+
+# set up the chain that takes a question and the retrieved documents and generates an answer
+document_chain = create_stuff_documents_chain(llm, prompt_template)
 
 # Converting the vector store into a retriever
+# use the retriever to dynamically select the most relevant documents and pass those in for a given question.
 retriever = db.as_retriever()
+retrieval_chain = create_retrieval_chain(retriever, document_chain)
 
 # Create a prompt for generating the search query
-prompt = ChatPromptTemplate.from_messages([
+query_prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder(variable_name="chat_history"),
     ("user", "{input}"),
     ("user", "Please input your query or question related to Jira tickets. "
@@ -106,7 +108,7 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # Create the history-aware retrieval chain
-retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
+retriever_chain = create_history_aware_retriever(llm, retriever, query_prompt)
 
 # Define the prompt template for continuing conversation with retrieved documents
 document_prompt_template = ChatPromptTemplate.from_messages([
@@ -124,7 +126,7 @@ document_prompt_template = ChatPromptTemplate.from_messages([
 document_chain = create_stuff_documents_chain(llm, document_prompt_template)
 
 # Create a retrieval chain incorporating both the conversation-aware retrieval and document chain
-retrieval_chain = create_retrieval_chain(retriever_chain, document_chain)
+document_retrieval_chain = create_retrieval_chain(retriever_chain, document_chain)
 
 
 # Function to invoke the retrieval chain with a query
