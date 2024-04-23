@@ -1,29 +1,35 @@
 import os
 from jira import JIRA
 from langchain_openai import OpenAI
-from langchain_community.document_loaders import TextLoader
-from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
-from langchain_text_splitters import CharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import HumanMessage, AIMessage
-import numpy as np
-import faiss
+from langchain_chroma import Chroma
+import spacy
 
-# Environment variables
-os.environ["JIRA_API_TOKEN"] = ""
-os.environ["JIRA_USERNAME"] = ""
-os.environ["JIRA_INSTANCE_URL"] = ""
+# Modify the creation of Document instances to include page_content and metadata
+nlp = spacy.load("en_core_web_sm")
+class Document:
+    def __init__(self, text, metadata=None, page_content=None):
+        self.text = text
+        self.metadata = metadata if metadata else {}
+        self.page_content = page_content
+
+
+# Access environment variables
+JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+JIRA_USERNAME = os.getenv("JIRA_USERNAME")
+JIRA_INSTANCE_URL = os.getenv("JIRA_INSTANCE_URL")
 
 # Initialize JIRA client
 jira = JIRA(basic_auth=(os.environ["JIRA_USERNAME"], os.environ["JIRA_API_TOKEN"]),
             server=os.environ["JIRA_INSTANCE_URL"])
 
 # Initialize OpenAI for language processing
-llm = OpenAI(api_key="", temperature=0, model="gpt-3.5-turbo-instruct")
+llm = OpenAI(api_key=os.environ["OPENAI_API_KEY"], temperature=0, model="gpt-3.5-turbo")
 
 # Load data from JIRA and split the text data into chunks and then process them.
 # How to get the open issues?
@@ -33,23 +39,38 @@ issues = jira.search_issues("project=MP")
 # Store issues along with their texts for reference later
 issue_data = []
 for issue in issues:
-    summary = issue.fields.summary  # Assuming summary is short, doesn't need splitting.
+    summary = issue.fields.summary
     description = issue.fields.description if issue.fields.description else ""
-    # Create a list of tuples (text, key, summary)
-    issue_data.append((summary, issue.key, summary))  # Append summary with key and summary for mapping
-    for line in description.split('\n'):
-        if line.strip():  # Only consider non-empty lines
-            issue_data.append((line, issue.key, summary))  # Append description parts with key and summary for mapping
 
-# Extract just the texts for embedding
-texts = [data[0] for data in issue_data]  # Get only the texts
+    # Create Document objects for summary and description
+    summary_doc = Document(summary, {"issue_key": issue.key, "source": "summary"}, summary)
+    issue_data.append((summary_doc, issue.key, summary_doc.text))
+
+    for line in description.split('\n'):
+        if line.strip():
+            description_doc = Document(line, {"issue_key": issue.key, "source": "description"}, line)
+            issue_data.append((description_doc, issue.key, summary_doc.text))
+
+# Extract just the Document objects
+documents = [data[0] for data in issue_data]
+
+metadata = [doc.metadata for doc in documents]
+page_contents = [doc.page_content for doc in documents]
+
+#print("metadata:",metadata, "page_contents:",page_contents)
+
+# Extract the text content from Document objects
+texts = [doc.text for doc in documents]
 
 # Initialize Langchain OpenAI Embeddings:
 embeddings = OpenAIEmbeddings()
 
-# Initialize and populate the FAISS index
-db = FAISS.from_documents(texts, embeddings)
+# Initialize and populate the CHROMA DB index
+db = Chroma.from_documents(documents, embeddings)
 
+# query it
+query = "Find me all tickets related with contract"
+docs = db.similarity_search(query)
 
 # Define the prompt template
 prompt_template = ChatPromptTemplate.from_messages([
@@ -57,6 +78,7 @@ prompt_template = ChatPromptTemplate.from_messages([
                "You should return the jira cards to the user related to that topic/input."
                "You shouldn't return jira cards not related to the input."),
     ("system", "Welcome to the Jira Assistant! How can I assist you today?"),
+    MessagesPlaceholder(variable_name="chat_history"),
     ("user", "{input}"),
     ("system", "Let me check Jira for tickets related to '{input}'..."),
     MessagesPlaceholder(variable_name="jira_tickets"),
@@ -66,17 +88,9 @@ prompt_template = ChatPromptTemplate.from_messages([
     ("user", "Okay, thank you for checking."),
     ("system", "You're welcome! If you have any more questions or need further assistance, feel free to ask."),
 ])
-
 # Define the LLM chain with prompt llm and output parser
 output_parser = StrOutputParser()
 chain = prompt_template | llm | output_parser
-
-# Retrieval chain using the FAISS vector store
-# retrieval_chain = FaissRetrieval(index, issue_data)
-
-# Querying the vector store
-query = "Find all tickets related to Contract"
-docs = db.similarity_search(query)
 
 # Converting the vector store into a retriever
 retriever = db.as_retriever()
@@ -96,12 +110,12 @@ retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
 
 # Define the prompt template for continuing conversation with retrieved documents
 document_prompt_template = ChatPromptTemplate.from_messages([
-    ("system", "Here are the Jira tickets related to your query:"),
+    ("system", "Here are the Jira tickets related to '{input}':"),
     MessagesPlaceholder(variable_name="chat_history"),
     ("user", "{input}"),
-    ("system", "Please find below the details of the Jira tickets related to your query:"),
+    ("system", "Please find below the details of the Jira tickets related to '{input}':"),
     MessagesPlaceholder(variable_name="jira_tickets"),
-    ("system", "I couldn't find any Jira tickets related to your query."),
+    ("system", "I couldn't find any Jira tickets related to '{input}'."),
     ("user", "Thank you for checking."),
     ("system", "You're welcome! If you have any more questions or need further assistance, feel free to ask."),
 ])
