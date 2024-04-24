@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_chroma import Chroma
 from dotenv import load_dotenv
 
+
 class Document:
     def __init__(self, text, metadata=None, page_content=None):
         self.text = text
@@ -77,11 +78,23 @@ retriever = db.as_retriever()
 
 # Create a prompt for generating the search query
 prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a JIRA Assistant. User will ask you for jira cards that you should retrieve."
+               "You should return the jira cards to the user related to that topic/input."
+               "You shouldn't return jira cards not related to the input."),
+    ("system", "Welcome to the Jira Assistant! How can I assist you today?"),
     MessagesPlaceholder(variable_name="chat_history"),
     ("user", "{input}"),
-    ("user", "Please input your query or question related to Jira tickets. "
-             "For example, you can ask about the status of a ticket, search for tickets assigned to a specific user, "
-             "or inquire about upcoming deadlines.")
+    ("system", "Let me check Jira for tickets related to '{input}'..."),
+    MessagesPlaceholder(variable_name="jira_tickets"),
+    ("system", "Here are the tickets I found related to '{input}':"),
+    MessagesPlaceholder(variable_name="relevant_tickets"),
+    ("system", "I couldn't find any tickets related to '{input}'."),
+    ("user", "Okay, thank you for checking."),
+    ("system", "Please input your query or question related to Jira tickets. "
+               "For example, you can ask about the status of a ticket, search for tickets assigned to a specific user, "
+               "or inquire about upcoming deadlines."),
+    ("user", "Okay, thank you for checking."),
+    ("system", "You're welcome! If you have any more questions or need further assistance, feel free to ask."),
 
 ])
 
@@ -100,18 +113,46 @@ document_chain = create_stuff_documents_chain(llm, document_prompt_template)
 # Create a retrieval chain incorporating both the conversation-aware retrieval and document chain
 retrieval_chain = create_retrieval_chain(retriever_chain, document_chain)
 
+
 # For Frontend - Define the function to query Jira tickets
+first_input = True
 def query_jira_tickets(input_word):
-    # Invoke your backend script here
+    global first_input
+
+    if first_input:
+        # Check if the input is a greeting or unclear
+        if input_word.lower() in ["hello", "hi", "hey", "greetings", "what's up"]:
+            first_input = False  # Mark as not first input
+            return "Please input your query or question related to Jira tickets. " \
+                   "For example, you can ask about the status of a ticket, search for tickets assigned to a specific user, " \
+                   "or inquire about upcoming deadlines."
+        else:
+            first_input = False  # Mark as not first input
+            return "Here are the tickets I found related to '{}':".format(input_word)
+
+    # Filter the documents to include only those related to the input word
+    relevant_tickets = [doc for doc in documents if input_word.lower() in doc.text.lower()]
+
+    # If no relevant tickets are found, return a message
+    if not relevant_tickets:
+        return f"No tickets related to '{input_word}' were found."
+
+    # Invoke the retrieval chain
     chat_history = []
     template = {
         "input": input_word,
-        "chat_history": chat_history
+        "chat_history": chat_history,
+        "relevant_tickets": relevant_tickets
     }
     response = retrieval_chain.invoke(template)
+
     # Convert the response to a format suitable for display
-    output = str(response)
-    return output
+    output = response.get("answer", "No answer found")
+
+    # Prepend the message to the list of tickets
+    output_with_message = f"Here are the tickets I found related to '{input_word}':\n{output}"
+    return output_with_message
+
 
 print(gr)
 # Create a Gradio interface
@@ -119,23 +160,9 @@ iface = gr.Interface(
     fn=query_jira_tickets,
     inputs=gr.Textbox(lines=1, label="Enter a word or phrase:"),
     outputs="text",
-    title="Jira Ticket Search",
-    description="Enter a word or phrase to search for related Jira tickets."
+    title="Peer AI",
+    description="Enter a word or phrase to search for related Jira issues."
 )
 
 # Launch the interface
 iface.launch()
-
-# Example usage: Invoking the retrieval chain with a query
-query = f"Find all tickets related with {input_word}"
-chat_history = [HumanMessage(content=f"is there any ticket related with {input_word}?"),
-                AIMessage(content=f"Yes, there are many tickets on the jira board related to {input_word}.")]
-
-template = {
-    "input": input_word,
-    "chat_history": chat_history
-}
-response = retrieval_chain.invoke(template)
-
-# Print the response
-print(response)

@@ -13,8 +13,8 @@ iface = gr.Interface(
     fn=query_jira_tickets,
     inputs=gr.Textbox(lines=1, label="Enter a word or phrase:"),
     outputs="text",
-    title="Jira Ticket Search",
-    description="Enter a word or phrase to search for related Jira tickets."
+    title="Peer AI",
+    description="Enter a word or phrase to search for related Jira issues."
 )
 
 # Launch the interface
