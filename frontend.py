@@ -1,6 +1,5 @@
 import gradio as gr
 
-
 # Define the function to query Jira tickets
 def query_jira_tickets(input_word):
     # Call the backend API endpoint to query Jira tickets
