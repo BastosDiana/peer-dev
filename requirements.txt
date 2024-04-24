@@ -1,0 +1,7 @@
+gradio==2.0.0
+jira==3.0.1
+langchain-community==1.0.0
+langchain-openai==1.0.0
+langchain-core==1.0.0
+langchain-chroma==1.0.0
+python-dotenv==0.19.1
